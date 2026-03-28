@@ -6,6 +6,7 @@ use app::{AppState, Flags};
 use config::{CONFIG_VERSION, Config};
 use cosmic::cosmic_config;
 use cosmic::cosmic_config::CosmicConfigEntry;
+use remote::RemoteCommand;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
@@ -18,6 +19,7 @@ mod localize;
 mod message;
 mod my_widget;
 mod navigation;
+mod remote;
 mod utils;
 mod view;
 
@@ -46,14 +48,82 @@ fn setup_logs() {
     }
 }
 
+enum CliMode {
+    RunApplet,
+    Version,
+    Help,
+    Remote(RemoteCommand),
+}
+
+impl CliMode {
+    fn flag(&self) -> Option<&'static str> {
+        match self {
+            Self::RunApplet => None,
+            Self::Version => Some("--version"),
+            Self::Help => Some("--help"),
+            Self::Remote(command) => Some(command.flag()),
+        }
+    }
+}
+
+fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<CliMode, String> {
+    let mut mode = CliMode::RunApplet;
+
+    for arg in args {
+        let next = match arg.as_str() {
+            "-V" | "--version" => CliMode::Version,
+            "-h" | "--help" => CliMode::Help,
+            _ => match RemoteCommand::from_flag(&arg) {
+                Some(command) => CliMode::Remote(command),
+                None => return Err(format!("unknown argument: {arg}")),
+            },
+        };
+
+        if let Some(previous) = mode.flag() {
+            return Err(format!(
+                "only one command flag can be used at a time: {previous} and {arg}"
+            ));
+        }
+
+        mode = next;
+    }
+
+    Ok(mode)
+}
+
+fn print_usage(program: &str) {
+    println!("Usage: {program} [--toggle|--show|--hide|--ping|--version|--help]");
+}
+
 fn main() {
-    for arg in std::env::args().skip(1) {
-        if arg == "-V" || arg == "--version" {
+    let program = std::env::args()
+        .next()
+        .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string());
+
+    match parse_cli(std::env::args().skip(1)) {
+        Ok(CliMode::RunApplet) => {}
+        Ok(CliMode::Version) => {
             let version = env!("CARGO_PKG_VERSION");
             let commit = option_env!("CLIPBOARD_MANAGER_COMMIT").unwrap_or("unknown");
 
             println!("clipboard-manager {version} (commit {commit})");
             return;
+        }
+        Ok(CliMode::Help) => {
+            print_usage(&program);
+            return;
+        }
+        Ok(CliMode::Remote(command)) => {
+            if let Err(err) = remote::invoke(command) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            print_usage(&program);
+            std::process::exit(2);
         }
     }
 

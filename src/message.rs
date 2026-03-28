@@ -9,6 +9,8 @@ use crate::{
 pub enum AppMsg {
     ChangeConfig(Config),
     TogglePopup,
+    TogglePopupRemote,
+    ShowPopupRemote,
     ToggleQuickSettings,
     ClosePopup,
     Search(String),

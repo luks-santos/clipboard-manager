@@ -6,6 +6,7 @@ use cosmic::iced::keyboard::key::Named;
 use cosmic::iced::window::Id;
 use cosmic::iced::{self, Limits};
 
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use cosmic::iced_core::widget::operation;
 use cosmic::iced_futures::Subscription;
 use cosmic::iced_runtime::core::window;
@@ -30,7 +31,7 @@ use crate::message::{AppMsg, ConfigMsg, ContextMenuMsg};
 use crate::navigation::EventMsg;
 use crate::utils::task_message;
 use crate::view::SCROLLABLE_ID;
-use crate::{clipboard, clipboard_watcher, config, navigation};
+use crate::{clipboard, clipboard_watcher, config, navigation, remote};
 
 use cosmic::{cosmic_config, iced_runtime};
 use std::sync::atomic::{self};
@@ -83,6 +84,7 @@ pub struct Flags {
 #[derive(Debug, Clone)]
 struct Popup {
     pub kind: PopupKind,
+    pub surface: PopupSurface,
     pub id: window::Id,
 }
 
@@ -92,7 +94,48 @@ enum PopupKind {
     QuickSettings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PopupSurface {
+    WaylandPopup,
+    LayerSurface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PopupRequestOrigin {
+    User,
+    Remote,
+}
+
 impl<Db: DbTrait> AppState<Db> {
+    fn layer_popup_layout(&self) -> (layer_surface::Anchor, Option<(Option<u32>, Option<u32>)>) {
+        match self.core.applet.anchor {
+            PanelAnchor::Left => (
+                layer_surface::Anchor::LEFT
+                    | layer_surface::Anchor::TOP
+                    | layer_surface::Anchor::BOTTOM,
+                Some((Some(400), None)),
+            ),
+            PanelAnchor::Right => (
+                layer_surface::Anchor::RIGHT
+                    | layer_surface::Anchor::TOP
+                    | layer_surface::Anchor::BOTTOM,
+                Some((Some(400), None)),
+            ),
+            PanelAnchor::Top => (
+                layer_surface::Anchor::TOP
+                    | layer_surface::Anchor::LEFT
+                    | layer_surface::Anchor::RIGHT,
+                Some((None, Some(350))),
+            ),
+            PanelAnchor::Bottom => (
+                layer_surface::Anchor::BOTTOM
+                    | layer_surface::Anchor::LEFT
+                    | layer_surface::Anchor::RIGHT,
+                Some((None, Some(350))),
+            ),
+        }
+    }
+
     fn focus_next(&mut self) -> Task<AppMsg> {
         if self.db.len() > 0 {
             self.focused = (self.focused + 1) % self.db.len();
@@ -157,17 +200,40 @@ impl<Db: DbTrait> AppState<Db> {
         }
     }
 
-    fn toggle_popup(&mut self, kind: PopupKind) -> Task<AppMsg> {
+    fn toggle_popup(&mut self, kind: PopupKind, origin: PopupRequestOrigin) -> Task<AppMsg>
+    where
+        Self: cosmic::Application<Message = AppMsg> + 'static,
+    {
         self.qr_code.take();
         match &self.popup {
             Some(popup) => {
                 if popup.kind == kind {
                     self.close_popup()
                 } else {
-                    Task::batch(vec![self.close_popup(), self.open_popup(kind)])
+                    Task::batch(vec![self.close_popup(), self.open_popup(kind, origin)])
                 }
             }
-            None => self.open_popup(kind),
+            None => self.open_popup(kind, origin),
+        }
+    }
+
+    fn show_popup(&mut self, kind: PopupKind, origin: PopupRequestOrigin) -> Task<AppMsg>
+    where
+        Self: cosmic::Application<Message = AppMsg> + 'static,
+    {
+        match &self.popup {
+            Some(popup) => {
+                if popup.kind == kind {
+                    Task::none()
+                } else {
+                    self.qr_code.take();
+                    Task::batch(vec![self.close_popup(), self.open_popup(kind, origin)])
+                }
+            }
+            None => {
+                self.qr_code.take();
+                self.open_popup(kind, origin)
+            }
         }
     }
 
@@ -181,17 +247,19 @@ impl<Db: DbTrait> AppState<Db> {
 
             self.last_quit = Some((Utc::now().timestamp_millis(), popup.kind));
 
-            if self.config.horizontal {
-                destroy_layer_surface(popup.id)
-            } else {
-                destroy_popup(popup.id)
+            match popup.surface {
+                PopupSurface::LayerSurface => destroy_layer_surface(popup.id),
+                PopupSurface::WaylandPopup => destroy_popup(popup.id),
             }
         } else {
             Task::none()
         }
     }
 
-    fn open_popup(&mut self, kind: PopupKind) -> Task<AppMsg> {
+    fn open_popup(&mut self, kind: PopupKind, origin: PopupRequestOrigin) -> Task<AppMsg>
+    where
+        Self: cosmic::Application<Message = AppMsg> + 'static,
+    {
         // handle the case where the popup was closed by clicking the icon
         if self
             .last_quit
@@ -204,41 +272,35 @@ impl<Db: DbTrait> AppState<Db> {
         let new_id = Id::unique();
         // info!("will create {:?}", new_id);
 
-        let popup = Popup { kind, id: new_id };
+        let surface = match (kind, origin, self.config.horizontal) {
+            (PopupKind::Popup, PopupRequestOrigin::Remote, false) => PopupSurface::LayerSurface,
+            (PopupKind::Popup, _, true) => PopupSurface::LayerSurface,
+            _ => PopupSurface::WaylandPopup,
+        };
+
+        let popup = Popup {
+            kind,
+            surface,
+            id: new_id,
+        };
         self.popup.replace(popup);
 
-        match kind {
-            PopupKind::Popup => {
-                if self.config.horizontal {
-                    get_layer_surface(SctkLayerSurfaceSettings {
-                        id: new_id,
-                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                        anchor: layer_surface::Anchor::BOTTOM
-                            | layer_surface::Anchor::LEFT
-                            | layer_surface::Anchor::RIGHT,
-                        namespace: "clipboard manager".into(),
-                        size: Some((None, Some(350))),
-                        size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
-                        ..Default::default()
-                    })
-                } else {
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
+        match (kind, surface) {
+            (PopupKind::Popup, PopupSurface::LayerSurface) => {
+                let (anchor, size) = self.layer_popup_layout();
 
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .min_width(300.0)
-                        .max_width(400.0)
-                        .min_height(200.0)
-                        .max_height(500.0);
-                    get_popup(popup_settings)
-                }
+                get_layer_surface(SctkLayerSurfaceSettings {
+                    id: new_id,
+                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                    anchor,
+                    namespace: "clipboard manager".into(),
+                    size,
+                    size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
+                    ..Default::default()
+                })
             }
-            PopupKind::QuickSettings => {
+            (PopupKind::Popup, PopupSurface::WaylandPopup)
+            | (PopupKind::QuickSettings, PopupSurface::WaylandPopup) => {
                 let mut popup_settings = self.core.applet.get_popup_settings(
                     self.core.main_window_id().unwrap(),
                     new_id,
@@ -248,12 +310,24 @@ impl<Db: DbTrait> AppState<Db> {
                 );
 
                 popup_settings.positioner.size_limits = Limits::NONE
-                    .min_width(200.0)
-                    .max_width(250.0)
+                    .min_width(300.0)
+                    .max_width(400.0)
                     .min_height(200.0)
-                    .max_height(550.0);
+                    .max_height(500.0);
+                popup_settings.grab = matches!(origin, PopupRequestOrigin::User);
+
+                if kind == PopupKind::QuickSettings {
+                    popup_settings.positioner.size_limits = Limits::NONE
+                        .min_width(200.0)
+                        .max_width(250.0)
+                        .min_height(200.0)
+                        .max_height(550.0);
+                }
 
                 get_popup(popup_settings)
+            }
+            (PopupKind::QuickSettings, PopupSurface::LayerSurface) => {
+                unreachable!("quick settings always uses a wayland popup")
             }
         }
     }
@@ -356,10 +430,16 @@ impl<Db: DbTrait + 'static> cosmic::Application for AppState<Db> {
                 self.config = config;
             }
             AppMsg::ToggleQuickSettings => {
-                return self.toggle_popup(PopupKind::QuickSettings);
+                return self.toggle_popup(PopupKind::QuickSettings, PopupRequestOrigin::User);
             }
             AppMsg::TogglePopup => {
-                return self.toggle_popup(PopupKind::Popup);
+                return self.toggle_popup(PopupKind::Popup, PopupRequestOrigin::User);
+            }
+            AppMsg::TogglePopupRemote => {
+                return self.toggle_popup(PopupKind::Popup, PopupRequestOrigin::Remote);
+            }
+            AppMsg::ShowPopupRemote => {
+                return self.show_popup(PopupKind::Popup, PopupRequestOrigin::Remote);
             }
             AppMsg::ClosePopup => return self.close_popup(),
             AppMsg::Search(query) => {
@@ -538,15 +618,14 @@ impl<Db: DbTrait + 'static> cosmic::Application for AppState<Db> {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let icon = self
-            .core
-            .applet
-            .icon_button(constcat::concat!(APPID, "-symbolic"))
-            .on_press(AppMsg::TogglePopup);
-
-        MouseArea::new(icon)
-            .on_right_release(AppMsg::ToggleQuickSettings)
-            .into()
+        MouseArea::new(
+            self.core
+                .applet
+                .icon_button(constcat::concat!(APPID, "-symbolic"))
+                .on_press(AppMsg::TogglePopup),
+        )
+        .on_right_release(AppMsg::ToggleQuickSettings)
+        .into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
@@ -570,6 +649,7 @@ impl<Db: DbTrait + 'static> cosmic::Application for AppState<Db> {
             config::sub(),
             navigation::sub().map(AppMsg::Navigation),
             db_sub().map(AppMsg::Db),
+            remote::subscription(),
         ];
 
         if !self.clipboard_state.is_error() {

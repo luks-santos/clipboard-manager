@@ -41,6 +41,10 @@ include_dir = "0.7"
 itertools = "0.14"
 regex = "1"
 open = "5"
+zbus = { version = "5.13.2", default-features = false, features = [
+    "tokio",
+    "blocking-api",
+] }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
