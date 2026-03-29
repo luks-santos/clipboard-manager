@@ -92,7 +92,7 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<CliMode, String> 
 }
 
 fn print_usage(program: &str) {
-    println!("Usage: {program} [--toggle|--show|--hide|--ping|--version|--help]");
+    println!("Usage: {program} [--toggle-launcher|--show-launcher|--ping|--version|--help]");
 }
 
 fn main() {

@@ -13,18 +13,16 @@ pub const REMOTE_PATH: &str = "/io/github/cosmic_utils/cosmic_ext_applet_clipboa
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCommand {
-    Toggle,
-    Show,
-    Hide,
+    ToggleLauncher,
+    ShowLauncher,
     Ping,
 }
 
 impl RemoteCommand {
     pub fn from_flag(flag: &str) -> Option<Self> {
         match flag {
-            "--toggle" => Some(Self::Toggle),
-            "--show" => Some(Self::Show),
-            "--hide" => Some(Self::Hide),
+            "--toggle-launcher" => Some(Self::ToggleLauncher),
+            "--show-launcher" => Some(Self::ShowLauncher),
             "--ping" => Some(Self::Ping),
             _ => None,
         }
@@ -32,18 +30,16 @@ impl RemoteCommand {
 
     pub fn flag(self) -> &'static str {
         match self {
-            Self::Toggle => "--toggle",
-            Self::Show => "--show",
-            Self::Hide => "--hide",
+            Self::ToggleLauncher => "--toggle-launcher",
+            Self::ShowLauncher => "--show-launcher",
             Self::Ping => "--ping",
         }
     }
 
     fn into_app_message(self) -> AppMsg {
         match self {
-            Self::Toggle => AppMsg::TogglePopupRemote,
-            Self::Show => AppMsg::ShowPopupRemote,
-            Self::Hide => AppMsg::ClosePopup,
+            Self::ToggleLauncher => AppMsg::ToggleLauncherRemote,
+            Self::ShowLauncher => AppMsg::ShowLauncherRemote,
             Self::Ping => unreachable!("ping is handled directly by D-Bus"),
         }
     }
@@ -85,15 +81,12 @@ pub fn invoke(command: RemoteCommand) -> anyhow::Result<()> {
         .context("clipboard manager applet is not reachable over D-Bus")?;
 
     match command {
-        RemoteCommand::Toggle => proxy
-            .toggle()
-            .context("failed to send toggle request to the applet")?,
-        RemoteCommand::Show => proxy
-            .show()
-            .context("failed to send show request to the applet")?,
-        RemoteCommand::Hide => proxy
-            .hide()
-            .context("failed to send hide request to the applet")?,
+        RemoteCommand::ToggleLauncher => proxy
+            .toggle_launcher()
+            .context("failed to send toggle launcher request to the applet")?,
+        RemoteCommand::ShowLauncher => proxy
+            .show_launcher()
+            .context("failed to send show launcher request to the applet")?,
         RemoteCommand::Ping => {
             anyhow::ensure!(
                 proxy.ping().context("failed to ping the applet")?,
@@ -150,24 +143,19 @@ impl RemoteService {
     assume_defaults = true
 )]
 trait ClipboardManagerRemote {
-    fn toggle(&self) -> zbus::Result<()>;
-    fn show(&self) -> zbus::Result<()>;
-    fn hide(&self) -> zbus::Result<()>;
+    fn toggle_launcher(&self) -> zbus::Result<()>;
+    fn show_launcher(&self) -> zbus::Result<()>;
     fn ping(&self) -> zbus::Result<bool>;
 }
 
 #[interface(name = "io.github.cosmic_utils.cosmic_ext_applet_clipboard_manager.Remote")]
 impl RemoteService {
-    fn toggle(&self) -> zbus::fdo::Result<()> {
-        self.send(RemoteCommand::Toggle)
+    fn toggle_launcher(&self) -> zbus::fdo::Result<()> {
+        self.send(RemoteCommand::ToggleLauncher)
     }
 
-    fn show(&self) -> zbus::fdo::Result<()> {
-        self.send(RemoteCommand::Show)
-    }
-
-    fn hide(&self) -> zbus::fdo::Result<()> {
-        self.send(RemoteCommand::Hide)
+    fn show_launcher(&self) -> zbus::fdo::Result<()> {
+        self.send(RemoteCommand::ShowLauncher)
     }
 
     fn ping(&self) -> bool {

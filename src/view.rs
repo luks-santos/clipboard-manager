@@ -2,7 +2,7 @@ use std::{borrow::Cow, cmp::min, sync::LazyLock};
 
 use cosmic::{
     Apply, Element,
-    iced::{Alignment, Length, alignment::Horizontal, padding},
+    iced::{Alignment, Color, Length, alignment::Horizontal, padding},
     iced_widget::{
         Stack,
         scrollable::{Direction, Scrollbar},
@@ -11,7 +11,7 @@ use cosmic::{
     widget::{
         self, Id,
         button::{self},
-        column, container, image, row, scrollable, space, text, text_input, toggler,
+        column, container, image, mouse_area, row, scrollable, space, text, text_input, toggler,
     },
 };
 use itertools::Itertools;
@@ -28,6 +28,16 @@ use crate::{
 pub static SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("scrollable"));
 
 impl<Db: DbTrait> AppState<Db> {
+    fn clipboard_content_view(&self) -> Element<'_, AppMsg> {
+        if let ClipboardState::Error(e) = &self.clipboard_state {
+            self.error_view(e)
+        } else if let Some(qr_code_res) = &self.qr_code {
+            self.qr_code_view(qr_code_res)
+        } else {
+            self.list_view()
+        }
+    }
+
     pub fn quick_settings_view(&self) -> Element<'_, AppMsg> {
         fn toggle_settings<'a>(
             info: impl Into<Cow<'a, str>> + 'a,
@@ -65,26 +75,52 @@ impl<Db: DbTrait> AppState<Db> {
     }
 
     pub fn popup_view(&self) -> Element<'_, AppMsg> {
-        container(if let ClipboardState::Error(e) = &self.clipboard_state {
-            self.error_view(e)
-        } else if let Some(qr_code_res) = &self.qr_code {
-            self.qr_code_view(qr_code_res)
-        } else {
-            self.list_view()
-        })
-        .height(if self.config.horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(530f32)
-        })
-        .width(if self.config.horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(400f32)
-        })
-        .padding(15)
+        container(self.clipboard_content_view())
+            .height(if self.config.horizontal {
+                Length::Fill
+            } else {
+                Length::Fixed(530f32)
+            })
+            .width(if self.config.horizontal {
+                Length::Fill
+            } else {
+                Length::Fixed(400f32)
+            })
+            .padding(15)
+            .into()
+    }
+
+    pub fn launcher_view(&self) -> Element<'_, AppMsg> {
+        let card = container(container(self.clipboard_content_view()).padding(24))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .max_width(700.0)
+            .max_height(560.0)
+            .class(cosmic::theme::Container::Card);
+
+        cosmic::iced::widget::opaque(
+            mouse_area(
+                container(cosmic::iced::widget::opaque(card))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center(Length::Fill)
+                    .padding(24)
+                    .style(|_theme| container::Style {
+                        background: Some(
+                            Color {
+                                a: 0.45,
+                                ..Color::BLACK
+                            }
+                            .into(),
+                        ),
+                        ..container::Style::default()
+                    }),
+            )
+            .on_press(AppMsg::ClosePopup),
+        )
         .into()
     }
+
     pub fn page_count(&self) -> usize {
         self.db.len() / self.config.maximum_entries_by_page.get() as usize
     }
